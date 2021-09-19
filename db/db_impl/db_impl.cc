@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cstdio>
+#include <iostream>
 #include <map>
 #include <set>
 #include <sstream>
@@ -514,6 +515,7 @@ void DBImpl::CancelAllBackgroundWork(bool wait) {
 }
 
 Status DBImpl::CloseHelper() {
+  std::cout << "518, CloseHelper begin" << std::endl;
   // Guarantee that there is no background error recovery in progress before
   // continuing with the shutdown
   mutex_.Lock();
@@ -524,6 +526,8 @@ Status DBImpl::CloseHelper() {
   }
   mutex_.Unlock();
 
+  std::cout << "530, CloseHelper PermitUncheckedError" << std::endl;
+
   // Below check is added as recovery_error_ is not checked and it causes crash
   // in DBSSTTest.DBWithMaxSpaceAllowedWithBlobFiles when space limit is
   // reached.
@@ -532,12 +536,18 @@ Status DBImpl::CloseHelper() {
   // CancelAllBackgroundWork called with false means we just set the shutdown
   // marker. After this we do a variant of the waiting and unschedule work
   // (to consider: moving all the waiting into CancelAllBackgroundWork(true))
+
+  std::cout << "541, CloseHelper CancelAllBackgroundWork" << std::endl;
+
   CancelAllBackgroundWork(false);
   mutex_.Lock();
   env_->UnSchedule(this, Env::Priority::BOTTOM);
   env_->UnSchedule(this, Env::Priority::LOW);
   env_->UnSchedule(this, Env::Priority::HIGH);
   Status ret = Status::OK();
+
+  std::cout << "550, CloseHelper Wait for background work to finish"
+            << std::endl;
 
   // Wait for background work to finish
   while (bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
@@ -549,6 +559,9 @@ Status DBImpl::CloseHelper() {
   }
   TEST_SYNC_POINT_CALLBACK("DBImpl::CloseHelper:PendingPurgeFinished",
                            &files_grabbed_for_purge_);
+
+  std::cout << "563, CloseHelper EraseThreadStatusDbInfo" << std::endl;
+
   EraseThreadStatusDbInfo();
   flush_scheduler_.Clear();
   trim_history_scheduler_.Clear();
@@ -564,6 +577,8 @@ Status DBImpl::CloseHelper() {
   if (immutable_db_options_.experimental_mempurge_threshold > 0.0) {
     Status flush_ret;
     mutex_.Unlock();
+    std::cout << "580, CloseHelper GetColumnFamilySet" << std::endl;
+
     for (ColumnFamilyData* cf : *versions_->GetColumnFamilySet()) {
       if (immutable_db_options_.atomic_flush) {
         flush_ret = AtomicFlushMemTables({cf}, FlushOptions(),
@@ -585,6 +600,8 @@ Status DBImpl::CloseHelper() {
     mutex_.Lock();
   }
 
+  std::cout << "603, CloseHelper PopFirstFromFlushQueue" << std::endl;
+
   while (!flush_queue_.empty()) {
     const FlushRequest& flush_req = PopFirstFromFlushQueue();
     for (const auto& iter : flush_req) {
@@ -592,10 +609,14 @@ Status DBImpl::CloseHelper() {
     }
   }
 
+  std::cout << "612, CloseHelper PopFirstFromCompactionQueue" << std::endl;
+
   while (!compaction_queue_.empty()) {
     auto cfd = PopFirstFromCompactionQueue();
     cfd->UnrefAndTryDelete();
   }
+
+  std::cout << "619, CloseHelper delete default_cf_handle_;" << std::endl;
 
   if (default_cf_handle_ != nullptr || persist_stats_cf_handle_ != nullptr) {
     // we need to delete handle outside of lock because it does its own locking
@@ -610,6 +631,8 @@ Status DBImpl::CloseHelper() {
     }
     mutex_.Lock();
   }
+
+  std::cout << "635, CloseHelper opened_successfully_" << std::endl;
 
   // Clean up obsolete files due to SuperVersion release.
   // (1) Need to delete to obsolete files before closing because RepairDB()
@@ -634,6 +657,8 @@ Status DBImpl::CloseHelper() {
     mutex_.Lock();
   }
 
+  std::cout << "660, CloseHelper logs_to_free_" << std::endl;
+
   for (auto l : logs_to_free_) {
     delete l;
   }
@@ -654,6 +679,8 @@ Status DBImpl::CloseHelper() {
   }
   logs_.clear();
 
+  std::cout << "682, CloseHelper EraseUnRefEntries" << std::endl;
+
   // Table cache may have table handles holding blocks from the block cache.
   // We need to release them before the block cache is destroyed. The block
   // cache may be destroyed inside versions_.reset(), when column family data
@@ -673,6 +700,8 @@ Status DBImpl::CloseHelper() {
     delete txn_entry.second;
   }
 
+  std::cout << "682, CloseHelper UnlockFile" << std::endl;
+
   // versions need to be destroyed before table_cache since it can hold
   // references to table_cache.
   versions_.reset();
@@ -681,6 +710,8 @@ Status DBImpl::CloseHelper() {
     // TODO: Check for unlock error
     env_->UnlockFile(db_lock_).PermitUncheckedError();
   }
+
+  std::cout << "682, CloseHelper LogFlush" << std::endl;
 
   ROCKS_LOG_INFO(immutable_db_options_.info_log, "Shutdown complete");
   LogFlush(immutable_db_options_.info_log);
@@ -702,10 +733,13 @@ Status DBImpl::CloseHelper() {
       ret = s;
     }
   }
+  std::cout << "682, CloseHelper RemoveDBFromQueue" << std::endl;
 
   if (write_buffer_manager_ && wbm_stall_) {
     write_buffer_manager_->RemoveDBFromQueue(wbm_stall_.get());
   }
+
+  std::cout << "682, CloseHelper IsAborted" << std::endl;
 
   if (ret.IsAborted()) {
     // Reserve IsAborted() error for those where users didn't release
@@ -713,6 +747,8 @@ Status DBImpl::CloseHelper() {
     // retry. In this case, we wrap this exception to something else.
     return Status::Incomplete(ret.ToString());
   }
+  std::cout << "682, CloseHelper finish" << std::endl;
+
   return ret;
 }
 
@@ -1229,7 +1265,7 @@ Status DBImpl::SetDBOptions(
       file_options_for_compaction_ = fs_->OptimizeForCompactionTableWrite(
           file_options_for_compaction_, immutable_db_options_);
       versions_->ChangeFileOptions(mutable_db_options_);
-      //TODO(xiez): clarify why apply optimize for read to write options
+      // TODO(xiez): clarify why apply optimize for read to write options
       file_options_for_compaction_ = fs_->OptimizeForCompactionTableRead(
           file_options_for_compaction_, immutable_db_options_);
       file_options_for_compaction_.compaction_readahead_size =
@@ -1673,7 +1709,7 @@ InternalIterator* DBImpl::NewInternalIterator(const ReadOptions& read_options,
     IterState* cleanup =
         new IterState(this, &mutex_, super_version,
                       read_options.background_purge_on_iterator_cleanup ||
-                      immutable_db_options_.avoid_unnecessary_blocking_io);
+                          immutable_db_options_.avoid_unnecessary_blocking_io);
     internal_iter->RegisterCleanup(CleanupIteratorState, cleanup, nullptr);
 
     return internal_iter;
@@ -2024,8 +2060,8 @@ std::vector<Status> DBImpl::MultiGet(
     std::string* timestamp = timestamps ? &(*timestamps)[keys_read] : nullptr;
 
     LookupKey lkey(keys[keys_read], consistent_seqnum, read_options.timestamp);
-    auto cfh =
-        static_cast_with_check<ColumnFamilyHandleImpl>(column_family[keys_read]);
+    auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(
+        column_family[keys_read]);
     SequenceNumber max_covering_tombstone_seq = 0;
     auto mgd_iter = multiget_cf_data.find(cfh->cfd()->GetID());
     assert(mgd_iter != multiget_cf_data.end());
@@ -3448,8 +3484,7 @@ SuperVersion* DBImpl::GetAndRefSuperVersion(uint32_t column_family_id) {
 void DBImpl::CleanupSuperVersion(SuperVersion* sv) {
   // Release SuperVersion
   if (sv->Unref()) {
-    bool defer_purge =
-            immutable_db_options().avoid_unnecessary_blocking_io;
+    bool defer_purge = immutable_db_options().avoid_unnecessary_blocking_io;
     {
       InstrumentedMutexLock l(&mutex_);
       sv->Cleanup();
@@ -5025,8 +5060,7 @@ Status DBImpl::VerifyChecksumInternal(const ReadOptions& read_options,
     }
   }
 
-  bool defer_purge =
-          immutable_db_options().avoid_unnecessary_blocking_io;
+  bool defer_purge = immutable_db_options().avoid_unnecessary_blocking_io;
   {
     InstrumentedMutexLock l(&mutex_);
     for (auto sv : sv_list) {
